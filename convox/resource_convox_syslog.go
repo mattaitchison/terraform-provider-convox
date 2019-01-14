@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/convox/rack/pkg/structs"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
@@ -16,11 +17,6 @@ func ResourceConvoxSyslog(clientUnpacker ClientUnpacker) *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
-			},
-			"rack": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
@@ -68,9 +64,9 @@ func formURLString(d *schema.ResourceData) string {
 	return fmt.Sprintf("%s://%s:%d", d.Get("scheme"), d.Get("hostname"), d.Get("port"))
 }
 
-func readResourceStateFunc(c Client, resourceName string) resource.StateRefreshFunc {
+func readResourceStateFunc(c structs.Provider, resourceName string) resource.StateRefreshFunc {
 	return func() (interface{}, string, error) {
-		resource, err := c.GetResource(resourceName)
+		resource, err := c.ResourceGet(resourceName)
 		if err != nil {
 			return resource, "", err
 		}
@@ -94,18 +90,21 @@ func ResourceConvoxSyslogCreateFactory(clientUnpacker ClientUnpacker) schema.Cre
 			return fmt.Errorf("Error unpacking client in CreateFunc: %s", err.Error())
 		}
 
-		name := d.Get("name").(string)
-		options := map[string]string{
-			"name": name,
-			"Url":  formURLString(d),
+		parameters := map[string]string{
+			"Url": formURLString(d),
 		}
 
 		if v, ok := d.GetOk("private"); ok {
-			options["Private"] = fmt.Sprintf("%v", v)
+			parameters["Private"] = fmt.Sprintf("%v", v)
 		}
 
+		name := d.Get("name").(string)
+		options := structs.ResourceCreateOptions{
+			Name:       &name,
+			Parameters: parameters,
+		}
 		log.Printf("[INFO] Calling Convox CreateResource...")
-		_, err = c.CreateResource("syslog", options)
+		_, err = c.ResourceCreate("syslog", options)
 		if err != nil {
 			return fmt.Errorf("Error calling CreateResource: %s -- %v", err.Error(), options)
 		}
@@ -125,7 +124,7 @@ func ResourceConvoxSyslogCreateFactory(clientUnpacker ClientUnpacker) schema.Cre
 
 		d.SetId(name)
 
-		d.Set("url", options["Url"])
+		d.Set("url", parameters["Url"])
 
 		return nil
 	}
@@ -147,7 +146,7 @@ func ResourceConvoxSyslogReadFactory(clientUnpacker ClientUnpacker) schema.ReadF
 
 		name := d.Get("name").(string)
 		log.Printf("[INFO] Calling Convox GetResource(%s)...", name)
-		convoxResource, err := c.GetResource(name)
+		convoxResource, err := c.ResourceGet(name)
 		if err != nil {
 			return fmt.Errorf("Error calling GetResource: %s", err.Error())
 		}
@@ -173,17 +172,21 @@ func ResourceConvoxSyslogUpdateFactory(clientUnpacker ClientUnpacker) schema.Upd
 			return fmt.Errorf("Error getting client in UpdateFunc: %s", err.Error())
 		}
 
-		options := map[string]string{
+		parameters := map[string]string{
 			"Url": formURLString(d),
 		}
 
 		if v, ok := d.GetOk("private"); ok {
-			options["Private"] = fmt.Sprintf("%v", v)
+			parameters["Private"] = fmt.Sprintf("%v", v)
+		}
+
+		options := structs.ResourceUpdateOptions{
+			Parameters: parameters,
 		}
 
 		name := d.Get("name").(string)
 		log.Printf("[INFO] Calling Convox UpdateResource(%s, <options>)...", name)
-		_, err = c.UpdateResource(name, options)
+		_, err = c.ResourceUpdate(name, options)
 		if err != nil {
 			return fmt.Errorf("Error calling UpdateResource: %s -- %v", err.Error(), options)
 		}
@@ -201,7 +204,7 @@ func ResourceConvoxSyslogUpdateFactory(clientUnpacker ClientUnpacker) schema.Upd
 				"Error waiting for resource (%s) to be updated: %s", name, err)
 		}
 
-		d.Set("url", options["Url"])
+		d.Set("url", parameters["Url"])
 
 		return nil
 	}
@@ -223,7 +226,7 @@ func ResourceConvoxSyslogDeleteFactory(clientUnpacker ClientUnpacker) schema.Del
 
 		name := d.Get("name").(string)
 		log.Printf("[INFO] Calling Convox DeleteResource(%s)...", name)
-		_, err = c.DeleteResource(name)
+		err = c.ResourceDelete(name)
 		if err != nil {
 			return fmt.Errorf("Error calling DeleteResource: %s", err.Error())
 		}

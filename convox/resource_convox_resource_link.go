@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/convox/rack/pkg/structs"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
@@ -13,11 +14,6 @@ import (
 func ResourceConvoxResourceLink(clientUnpacker ClientUnpacker) *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
-			"rack": &schema.Schema{
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
-			},
 			"app_name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
@@ -50,7 +46,7 @@ func ResourceConvoxResourceLinkCreateFactory(clientUnpacker ClientUnpacker) sche
 		resourceName := d.Get("resource_name").(string)
 		app := d.Get("app_name").(string)
 
-		_, err = c.CreateLink(app, resourceName)
+		_, err = c.ResourceLink(resourceName, app)
 		if err != nil {
 			if strings.Contains(err.Error(), "UPDATE_IN_PROGRESS") {
 				if err := waitForRunning(c, resourceName); err != nil {
@@ -89,7 +85,7 @@ func ResourceConvoxResourceLinkDeleteFactory(clientUnpacker ClientUnpacker) sche
 		resourceName := d.Get("resource_name").(string)
 		app := d.Get("app_name").(string)
 
-		_, err = c.DeleteLink(app, resourceName)
+		_, err = c.ResourceUnlink(resourceName, app)
 		if err != nil {
 			return fmt.Errorf("Error calling DeleteLink(%s, %s): %s", app, resourceName, err.Error())
 		}
@@ -103,7 +99,7 @@ func ResourceConvoxResourceLinkDeleteFactory(clientUnpacker ClientUnpacker) sche
 	}
 }
 
-func waitForRunning(c Client, resourceName string) error {
+func waitForRunning(c structs.Provider, resourceName string) error {
 	stateConf := &resource.StateChangeConf{
 		Pending: []string{"updating"},
 		Target:  []string{"running"},

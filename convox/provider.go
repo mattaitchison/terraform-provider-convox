@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 
-	"github.com/convox/rack/client"
+	"github.com/convox/rack/pkg/structs"
+	"github.com/convox/rack/sdk"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
 	homedir "github.com/mitchellh/go-homedir"
@@ -17,7 +19,7 @@ import (
 const (
 	// DefaultHost is the default value for which Convox rack host to connect to
 	DefaultHost   = "console.convox.com"
-	clientVersion = "20170509022518"
+	clientVersion = "20190103234204"
 )
 
 // Provider returns a terraform.ResourceProvider.
@@ -38,6 +40,10 @@ func Provider() terraform.ResourceProvider {
 				Sensitive:   true,
 				DefaultFunc: schema.EnvDefaultFunc("CONVOX_PASSWORD", ""),
 			},
+			"rack": &schema.Schema{
+				Type:     schema.TypeString,
+				Required: true,
+			},
 			"config_path": &schema.Schema{
 				Type:        schema.TypeString,
 				Optional:    true,
@@ -57,13 +63,13 @@ func Provider() terraform.ResourceProvider {
 func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	host := getHost(d)
 	pass := getPassword(d, host)
-	c := client.New(host, pass, clientVersion)
-	if host == DefaultHost {
-		// c.Auth() only works for DefaultHost?
-		if _, err := c.Auth(); err != nil {
-			return nil, fmt.Errorf("Error authenticating with convox host (%s): %s, %s", host, err, pass)
-		}
+	rack := d.Get("rack").(string)
+
+	c, err := sdk.New(fmt.Sprintf("https://convox:%s@%s", url.QueryEscape(pass), host))
+	if err != nil {
+		return nil, err
 	}
+	c.Rack = rack
 
 	return c, nil
 }
@@ -95,21 +101,17 @@ func configDefaultFunc() schema.SchemaDefaultFunc {
 }
 
 // UnpackRackClient casts the meta as a convox Client and specifies the rack from schema
-func UnpackRackClient(d ValueGetter, meta interface{}) (Client, error) {
+func UnpackRackClient(d ValueGetter, meta interface{}) (structs.Provider, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("meta is nil")
 	}
 
-	c := meta.(*client.Client)
+	c := meta.(structs.Provider)
 	if c == nil {
 		return nil, fmt.Errorf("Could not convert meta to rack Client: %#v", meta)
 	}
 
-	if v, ok := d.GetOk("rack"); ok {
-		c.Rack = v.(string)
-	}
-
-	return NewRateLimitRespectingClient(c), nil
+	return c, nil
 }
 
 func getHost(d *schema.ResourceData) string {

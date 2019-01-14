@@ -1,3 +1,19 @@
+/*
+   Copyright The containerd Authors.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
 package fs
 
 import (
@@ -16,14 +32,49 @@ var bufferPool = &sync.Pool{
 	},
 }
 
-// CopyDir copies the directory from src to dst.
-// Most efficient copy of files is attempted.
-func CopyDir(dst, src string) error {
-	inodes := map[uint64]string{}
-	return copyDirectory(dst, src, inodes)
+// XAttrErrorHandlers transform a non-nil xattr error.
+// Return nil to ignore an error.
+// xattrKey can be empty for listxattr operation.
+type XAttrErrorHandler func(dst, src, xattrKey string, err error) error
+
+type copyDirOpts struct {
+	xeh XAttrErrorHandler
 }
 
-func copyDirectory(dst, src string, inodes map[uint64]string) error {
+type CopyDirOpt func(*copyDirOpts) error
+
+// WithXAttrErrorHandler allows specifying XAttrErrorHandler
+// If nil XAttrErrorHandler is specified (default), CopyDir stops
+// on a non-nil xattr error.
+func WithXAttrErrorHandler(xeh XAttrErrorHandler) CopyDirOpt {
+	return func(o *copyDirOpts) error {
+		o.xeh = xeh
+		return nil
+	}
+}
+
+// WithAllowXAttrErrors allows ignoring xattr errors.
+func WithAllowXAttrErrors() CopyDirOpt {
+	xeh := func(dst, src, xattrKey string, err error) error {
+		return nil
+	}
+	return WithXAttrErrorHandler(xeh)
+}
+
+// CopyDir copies the directory from src to dst.
+// Most efficient copy of files is attempted.
+func CopyDir(dst, src string, opts ...CopyDirOpt) error {
+	var o copyDirOpts
+	for _, opt := range opts {
+		if err := opt(&o); err != nil {
+			return err
+		}
+	}
+	inodes := map[uint64]string{}
+	return copyDirectory(dst, src, inodes, &o)
+}
+
+func copyDirectory(dst, src string, inodes map[uint64]string, o *copyDirOpts) error {
 	stat, err := os.Stat(src)
 	if err != nil {
 		return errors.Wrapf(err, "failed to stat %s", src)
@@ -59,7 +110,7 @@ func copyDirectory(dst, src string, inodes map[uint64]string) error {
 
 		switch {
 		case fi.IsDir():
-			if err := copyDirectory(target, source, inodes); err != nil {
+			if err := copyDirectory(target, source, inodes, o); err != nil {
 				return err
 			}
 			continue
@@ -72,7 +123,7 @@ func copyDirectory(dst, src string, inodes map[uint64]string) error {
 				if err := os.Link(link, target); err != nil {
 					return errors.Wrap(err, "failed to create hard link")
 				}
-			} else if err := copyFile(source, target); err != nil {
+			} else if err := CopyFile(target, source); err != nil {
 				return errors.Wrap(err, "failed to copy files")
 			}
 		case (fi.Mode() & os.ModeSymlink) == os.ModeSymlink:
@@ -95,7 +146,7 @@ func copyDirectory(dst, src string, inodes map[uint64]string) error {
 			return errors.Wrap(err, "failed to copy file info")
 		}
 
-		if err := copyXAttrs(target, source); err != nil {
+		if err := copyXAttrs(target, source, o.xeh); err != nil {
 			return errors.Wrap(err, "failed to copy xattrs")
 		}
 	}
@@ -103,7 +154,9 @@ func copyDirectory(dst, src string, inodes map[uint64]string) error {
 	return nil
 }
 
-func copyFile(source, target string) error {
+// CopyFile copies the source file to the target.
+// The most efficient means of copying is used for the platform.
+func CopyFile(target, source string) error {
 	src, err := os.Open(source)
 	if err != nil {
 		return errors.Wrapf(err, "failed to open source %s", source)

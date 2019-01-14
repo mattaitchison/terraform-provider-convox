@@ -1,31 +1,26 @@
 package convox_test
 
 import (
-	"github.com/convox/rack/client"
+	"github.com/convox/rack/pkg/structs"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mattatcha/terraform-provider-convox/convox"
+	"github.com/stretchr/testify/mock"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("ResourceConvoxResourceLink", func() {
-	convoxClient := &MockClient{}
-	var unpacker convox.ClientUnpacker = func(valueGetter convox.ValueGetter, meta interface{}) (convox.Client, error) {
+	convoxClient := &structs.MockProvider{}
+	var unpacker convox.ClientUnpacker = func(valueGetter convox.ValueGetter, meta interface{}) (structs.Provider, error) {
 		return convoxClient, nil
 	}
 
 	var resourceData *schema.ResourceData
 
 	BeforeEach(func() {
-		convoxClient.ResetNoop()
-		convoxClient.GetResourceFunc = func(name string) (*client.Resource, error) {
-			// for the wait for status
-			return &client.Resource{
-				Status: "running",
-			}, nil
-		}
+		convoxClient = &structs.MockProvider{}
 		resourceData = convox.ResourceConvoxResourceLink(unpacker).Data(&terraform.InstanceState{
 			Attributes: map[string]string{
 				"rack":          "test",
@@ -49,28 +44,20 @@ var _ = Describe("ResourceConvoxResourceLink", func() {
 		})
 
 		Describe("creating the resource", func() {
-			var calledResourceName string
-			var calledAppName string
 
 			BeforeEach(func() {
-				calledResourceName = ""
-				calledAppName = ""
-				convoxClient.CreateLinkFunc = func(app string, resource string) (*client.Resource, error) {
-					calledResourceName = resource
-					calledAppName = app
-
-					return nil, nil
-				}
+				convoxClient.On("ResourceGet", mock.Anything).Return(&structs.Resource{Status: "running"}, nil)
+				convoxClient.On("ResourceLink", mock.Anything, mock.Anything).Return(nil, nil)
 
 				Expect(cut(resourceData, "")).To(BeNil())
 			})
 
 			It("should call create with the specified resource name", func() {
-				Expect(calledResourceName).To(Equal("test_resource"))
+				Expect(convoxClient.Calls[0].Arguments.String(0)).To(Equal("test_resource"))
 			})
 
 			It("should call create with the specified app name", func() {
-				Expect(calledAppName).To(Equal("test_app"))
+				Expect(convoxClient.Calls[0].Arguments.String(1)).To(Equal("test_app"))
 			})
 		})
 	})
@@ -87,28 +74,19 @@ var _ = Describe("ResourceConvoxResourceLink", func() {
 		})
 
 		Describe("deleting the resource", func() {
-			var calledResourceName string
-			var calledAppName string
-
 			BeforeEach(func() {
-				calledResourceName = ""
-				calledAppName = ""
-				convoxClient.DeleteLinkFunc = func(app string, resource string) (*client.Resource, error) {
-					calledResourceName = resource
-					calledAppName = app
-
-					return nil, nil
-				}
+				convoxClient.On("ResourceGet", mock.Anything).Return(&structs.Resource{Status: "running"}, nil)
+				convoxClient.On("ResourceUnlink", mock.Anything, mock.Anything).Return(nil, nil)
 
 				Expect(cut(resourceData, "")).To(BeNil())
 			})
 
 			It("should call delete with the specified resource name", func() {
-				Expect(calledResourceName).To(Equal("test_resource"))
+				Expect(convoxClient.Calls[0].Arguments.String(0)).To(Equal("test_resource"))
 			})
 
 			It("should call delete with the specified app name", func() {
-				Expect(calledAppName).To(Equal("test_app"))
+				Expect(convoxClient.Calls[0].Arguments.String(1)).To(Equal("test_app"))
 			})
 		})
 	})

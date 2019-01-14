@@ -5,7 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/convox/rack/client"
+	"github.com/convox/rack/pkg/helpers"
+	"github.com/convox/rack/pkg/structs"
+
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -15,11 +17,6 @@ import (
 func ResourceConvoxApp(clientUnpacker ClientUnpacker) *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
-			"rack": &schema.Schema{
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
-			},
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
@@ -77,7 +74,11 @@ func ResourceConvoxAppCreateFactory(clientUnpacker ClientUnpacker) schema.Create
 			generation = "1"
 		}
 
-		app, err := c.CreateApp(name, generation)
+		options := structs.AppCreateOptions{
+			Generation: &generation,
+		}
+
+		app, err := c.AppCreate(name, options)
 		if err != nil {
 			return errwrap.Wrapf(fmt.Sprintf(
 				"Error creating app (%s): {{err}}", name), err)
@@ -113,7 +114,7 @@ func ResourceConvoxAppReadFactory(clientUnpacker ClientUnpacker) schema.ReadFunc
 			return errwrap.Wrapf("Error unpacking Convox client in App ReadFunc: {{err}}", err)
 		}
 
-		app, err := c.GetApp(d.Get("name").(string))
+		app, err := c.AppGet(d.Get("name").(string))
 		if err != nil {
 			return err
 		}
@@ -124,27 +125,24 @@ func ResourceConvoxAppReadFactory(clientUnpacker ClientUnpacker) schema.ReadFunc
 			return fmt.Errorf("Error setting the status key: %s", err.Error())
 		}
 
-		params, err := c.ListParameters(app.Name)
-		if err != nil {
-			return fmt.Errorf("Error calling ListParameters(%s): %s", app.Name, err.Error())
-		}
+		params := app.Parameters
 		err = d.Set("params", params)
 		if err != nil {
 			return errwrap.Wrapf("Error while setting params: {{err}}", err)
 		}
 
-		env, err := c.GetEnvironment(app.Name)
+		env, err := helpers.AppEnvironment(c, app.Name)
 		if err != nil {
 			return fmt.Errorf("Error calling GetEnvironment(%s): %s", app.Name, err.Error())
 		}
 
 		d.Set("environment", env)
 
-		formation, err := c.ListFormation(app.Name)
+		processes, err := c.ServiceList(app.Name)
 		if err != nil {
 			return errwrap.Wrapf("Error while reading formation from Convox API: {{err}}", err)
 		}
-		return readFormation(d, formation)
+		return readFormation(d, processes)
 	}
 }
 
@@ -156,18 +154,19 @@ func ResourceConvoxAppUpdateFactory(clientUnpacker ClientUnpacker) schema.Update
 
 	return func(d *schema.ResourceData, meta interface{}) error {
 		d.Partial(true)
+		name := d.Get("name").(string)
 
 		c, err := clientUnpacker(d, meta)
 		if err != nil {
 			return errwrap.Wrapf("Error unpacking Convox client in App UpdateFunc: {{err}}", err)
 		}
 
-		if err := setParams(c, d); err != nil {
+		if err := setParams(c, name, d); err != nil {
 			return err
 		}
 		d.SetPartial("params")
 
-		if err := setEnv(c, d); err != nil {
+		if err := setEnv(c, name, d); err != nil {
 			return err
 		}
 		d.SetPartial("environment")
@@ -189,20 +188,16 @@ func ResourceConvoxAppDeleteFactory(clientUnpacker ClientUnpacker) schema.Delete
 		if err != nil {
 			return errwrap.Wrapf("Error unpacking Convox client in App DeleteFunc: {{err}}", err)
 		}
-		_, err = c.DeleteApp(d.Id())
+		err = c.AppDelete(d.Id())
 		return err
 	}
 }
 
-func readFormation(d *schema.ResourceData, v client.Formation) error {
+func readFormation(d *schema.ResourceData, v structs.Services) error {
 	balancers := make(map[string]string, len(v))
 
 	for _, f := range v {
-		v := f.Balancer
-		if v == "" {
-			v = f.Hostname
-		}
-		balancers[f.Name] = v
+		balancers[f.Name] = f.Domain
 	}
 
 	if err := d.Set("balancers", balancers); err != nil {
@@ -212,18 +207,22 @@ func readFormation(d *schema.ResourceData, v client.Formation) error {
 	return nil
 }
 
-func setParams(c Client, d *schema.ResourceData) error {
+func setParams(c structs.Provider, appName string, d *schema.ResourceData) error {
 	if !d.HasChange("params") {
 		return nil
 	}
 
 	raw := d.Get("params").(map[string]interface{})
-	params := make(client.Parameters)
+	params := make(map[string]string)
+
+	opts := structs.AppUpdateOptions{
+		Parameters: map[string]string{},
+	}
 	for key := range raw {
-		params[key] = raw[key].(string)
+		opts.Parameters[key] = raw[key].(string)
 	}
 
-	if err := c.SetParameters(d.Id(), params); err != nil {
+	if err := c.AppUpdate(appName, opts); err != nil {
 		return errwrap.Wrapf(fmt.Sprintf("Error setting params (%#v) for %s: {{err}}", params, d.Id()), err)
 	}
 
@@ -253,7 +252,7 @@ func generationDiffSuppress(k, old, new string, d *schema.ResourceData) bool {
 	return old == new
 }
 
-func setEnv(c Client, d *schema.ResourceData) error {
+func setEnv(c structs.Provider, appName string, d *schema.ResourceData) error {
 	if !d.HasChange("environment") {
 		return nil
 	}
@@ -263,7 +262,8 @@ func setEnv(c Client, d *schema.ResourceData) error {
 	for key, value := range env {
 		data += fmt.Sprintf("%s=%s\n", key, value)
 	}
-	_, _, err := c.SetEnvironment(d.Id(), strings.NewReader(data))
+
+	_, err := c.ReleaseCreate(appName, structs.ReleaseCreateOptions{Env: &data})
 	if err != nil {
 		return fmt.Errorf("Error setting vars (%#v) for %s: %s", env, d.Id(), err)
 	}
@@ -271,9 +271,9 @@ func setEnv(c Client, d *schema.ResourceData) error {
 	return nil
 }
 
-func appRefreshFunc(client Client, name string) resource.StateRefreshFunc {
+func appRefreshFunc(client structs.Provider, name string) resource.StateRefreshFunc {
 	return func() (interface{}, string, error) {
-		app, err := client.GetApp(name)
+		app, err := client.AppGet(name)
 		if err != nil {
 			return app, "", err
 		}
